@@ -13,6 +13,7 @@ apt-get -o Acquire::Retries=0 -o APT::Update::Error-Mode=any update
 apt-get -o Acquire::Retries=0 -o "Dir::Cache::archives=$packages" \
     install --download-only --no-install-recommends -y \
     bash ca-certificates curl git jq openssh-client tar gzip unzip \
+    docker.io docker-buildx awscli \
     tini util-linux libicu74 libssl3t64 libkrb5-3 zlib1g libunwind8 liblttng-ust1t64
 shopt -s nullglob
 archives=("$packages"/*.deb)

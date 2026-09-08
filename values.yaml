@@ -26,7 +26,7 @@ persistence:
   existingClaim: ""
   size: 20Gi
   # null: cluster default; "": explicitly disable dynamic StorageClass selection.
-  storageClass: null
+  storageClass: gp3-auto
   accessModes: [ReadWriteOnce]
   # Retain data and registration credentials on Helm uninstall.
   retain: true
@@ -46,6 +46,7 @@ extraEnv: []
 nodeSelector:
   kubernetes.io/os: linux
   kubernetes.io/arch: amd64
+  eks.amazonaws.com/compute-type: auto
 tolerations: []
 affinity: {}
 
