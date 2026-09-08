@@ -5,7 +5,7 @@
 Ubuntu 24.04 / Linux amd64，依赖安装完成后以 UID/GID 1001 运行 runner。整个 runner 安装目录、
 注册凭据和工作区都存放在 PVC 中，支持 runner 自身自动更新以及 Pod 重建后恢复。
 
-Chart 名称为 `github-runner`。这是单 runner Chart，不包含自动扩容、GitHub App 自动签发注册 token、Docker daemon
+Chart 名称为 `github-runner`。这是单 runner Chart，不包含自动扩容、GitHub App 自动签发注册 token、运行中的 Docker daemon
 或构建语言 SDK。工作流需要的额外工具可通过 workflow 安装到用户可写目录。
 
 ## 文件
@@ -39,6 +39,11 @@ Chart 名称为 `github-runner`。这是单 runner Chart，不包含自动扩容
 如果可变标签在同一 Pod 的两个容器中解析为不同的软件包状态，启动会明确失败，需固定 digest 后重建 Pod。
 
 默认安装 runner 系统依赖以及 Bash、Git、curl、jq、SSH 客户端等工具。
+同时从 Ubuntu Noble 软件源安装 `docker.io`（提供 Docker CLI，也包含 daemon 文件）、
+`docker-buildx` 和 `awscli`（AWS CLI v2 的 Ubuntu 打包版本，非 AWS 官方 ZIP 安装版）。
+这些包与系统依赖一起下载、校验并离线安装，未添加其他软件源；继续使用 Ubuntu Noble 镜像。
+Chart 不启动 Docker daemon，也不挂载 Docker socket。构建镜像还需配置可访问的 Docker daemon / BuildKit，
+推送 ECR 还需在 workflow 中获取 AWS 权限并登录目标仓库。
 不支持开箱即用的 `docker build`、容器 action、`jobs.<job>.container` 和 service containers；
 这些场景需要另行设计容器执行方案。`ubuntu24` 只是自定义匹配标签，不代表具有 GitHub 托管 runner 的完整工具集。
 
@@ -105,6 +110,9 @@ jobs:
           id
           uname -m
           git --version
+          docker --version
+          docker buildx version
+          aws --version
           echo "Persistent runner is working"
 ```
 
@@ -250,7 +258,7 @@ docker pull public.ecr.aws/ubuntu/ubuntu:noble
 bash tests/container-smoke.sh
 ```
 
-该测试用两个独立容器共享临时卷，主容器禁用网络以验证离线安装，检查系统依赖和 UID/GID 1001，
+该测试用两个独立容器共享临时卷，主容器禁用网络以验证离线安装，检查系统依赖、Docker CLI、buildx、AWS CLI v2 和 UID/GID 1001，
 结束后清理测试容器和临时卷。它不注册 GitHub runner，也不访问现有 PVC。
 
 HTTP Chart 仓库：将 `dist/` 中生成的包和索引发布到自己的静态站点。
