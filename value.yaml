@@ -1,0 +1,5 @@
+
+
+# Compatibility override file. Defaults now live in values.yaml.
+# Existing `helm ... -f value.yaml` commands remain valid.
+{}

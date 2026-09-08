@@ -1,0 +1,14 @@
+Runner deployment: {{ include "github-runner.name" . }}
+
+Check startup and registration:
+  kubectl logs -n {{ .Release.Namespace }} deployment/{{ include "github-runner.name" . }} -f
+
+Confirm the runner is Online in GitHub Settings > Actions > Runners.
+Pod Running/Ready alone does not confirm GitHub connectivity.
+
+Before first startup, build/push image/Dockerfile and create the registration
+Secret described in readme.md. Registration is reused from the PVC on restart.
+{{ if .Values.persistence.retain }}
+Chart-created PVCs are retained on uninstall. Reinstall with
+--set persistence.existingClaim=<retained-pvc-name> to reuse the data.
+{{ end }}
