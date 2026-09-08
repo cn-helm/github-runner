@@ -3,6 +3,14 @@ set -Eeuo pipefail
 umask 077
 
 fail() { printf 'runner: %s\n' "$*" >&2; exit 1; }
+if [[ -n "${RUNNER_DOCKER_WAIT_SECONDS:-}" ]]; then
+    [[ "$RUNNER_DOCKER_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'Invalid Docker startup timeout.'
+    deadline=$((SECONDS + RUNNER_DOCKER_WAIT_SECONDS))
+    until timeout 5 docker info >/dev/null 2>&1; do
+        (( SECONDS < deadline )) || fail 'Docker daemon did not become ready; inspect the docker sidecar logs.'
+        sleep 2
+    done
+fi
 : "${GITHUB_REPO:?Set GITHUB_REPO to owner/repository}"
 : "${RUNNER_NAME:?Set RUNNER_NAME}"
 : "${RUNNER_INIT_VERSION:?Set RUNNER_INIT_VERSION}"

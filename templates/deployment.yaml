@@ -76,6 +76,12 @@ spec:
           env:
             - name: GITHUB_REPO
               value: {{ required "github.repo is required" .Values.github.repo | quote }}
+            {{- if .Values.dind.enabled }}
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker/docker.sock
+            - name: RUNNER_DOCKER_WAIT_SECONDS
+              value: {{ .Values.dind.startupTimeoutSeconds | quote }}
+            {{- end }}
             - name: GITHUB_RUNNER_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -101,13 +107,56 @@ spec:
           volumeMounts:
             - name: persistent
               mountPath: /persistent
+            {{- if .Values.dind.enabled }}
+            - name: docker-socket
+              mountPath: /var/run/docker
+            {{- end }}
             - name: packages
               mountPath: /packages
               readOnly: true
             - name: scripts
               mountPath: /opt/runner-scripts
               readOnly: true
+        {{- if .Values.dind.enabled }}
+        - name: docker
+          image: {{ .Values.dind.image | quote }}
+          imagePullPolicy: {{ .Values.dind.pullPolicy }}
+          # Explicit command prevents the entrypoint adding TCP listeners.
+          args: [dockerd, --host=unix:///var/run/docker/docker.sock, --group=1001]
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+            seccompProfile:
+              type: Unconfined
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+            {{- with .Values.dind.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            exec:
+              command: [docker, --host=unix:///var/run/docker/docker.sock, info]
+            periodSeconds: 5
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.dind.resources | nindent 12 }}
+          volumeMounts:
+            - name: docker-socket
+              mountPath: /var/run/docker
+            - name: docker-data
+              mountPath: /var/lib/docker
+            - name: persistent
+              mountPath: /persistent
+        {{- end }}
       volumes:
+        {{- if .Values.dind.enabled }}
+        - name: docker-socket
+          emptyDir: {}
+        - name: docker-data
+          emptyDir: {}
+        {{- end }}
         - name: packages
           emptyDir: {}
         - name: scripts

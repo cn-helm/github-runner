@@ -1,10 +1,25 @@
 image:
-  # Both containers must use the same Ubuntu Noble image.
+  # The dependencies initContainer and runner use the same Ubuntu Noble image.
   repository: public.ecr.aws/ubuntu/ubuntu
   tag: noble
   digest: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
+
+# Requires privileged containers; daemon storage is ephemeral.
+dind:
+  enabled: true
+  image: public.ecr.aws/docker/library/docker:dind
+  pullPolicy: IfNotPresent
+  startupTimeoutSeconds: 180
+  extraEnv: []
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 4Gi
 
 github:
   repo: cn-ph-spm/spm

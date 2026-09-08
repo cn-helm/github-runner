@@ -5,7 +5,7 @@
 Ubuntu 24.04 / Linux amd64，依赖安装完成后以 UID/GID 1001 运行 runner。整个 runner 安装目录、
 注册凭据和工作区都存放在 PVC 中，支持 runner 自身自动更新以及 Pod 重建后恢复。
 
-Chart 名称为 `github-runner`。这是单 runner Chart，不包含自动扩容、GitHub App 自动签发注册 token、运行中的 Docker daemon
+Chart 名称为 `github-runner`。这是单 runner Chart，不包含自动扩容、GitHub App 自动签发注册 token
 或构建语言 SDK。工作流需要的额外工具可通过 workflow 安装到用户可写目录。
 
 ## 文件
@@ -29,7 +29,8 @@ Chart 名称为 `github-runner`。这是单 runner Chart，不包含自动扩容
    此阶段不下载依赖；APT 按依赖关系安排安装顺序。
 3. 创建 runner 用户，以 `setpriv` 切换到 UID/GID 1001，再通过 tini 启动 runner。
 
-依赖准备及安装需要 root，两个容器都不是 privileged；runner 和 workflow 进程使用非 root 用户。
+依赖准备及安装需要 root，dependencies 和 runner 容器不是 privileged；runner 和 workflow 进程使用非 root 用户。
+默认启用的 Docker sidecar 使用 privileged，集群准入策略必须允许；拥有 Docker socket 访问权的工作流也能控制该特权 daemon，仅运行可信工作流。
 集群若强制所有容器 `runAsNonRoot`，该方案无法启动。
 通过 `kubectl exec` 新建的进程仍按容器配置使用 root；维护命令应显式切换到 runner 用户，见后文。
 
@@ -42,10 +43,40 @@ Chart 名称为 `github-runner`。这是单 runner Chart，不包含自动扩容
 同时从 Ubuntu Noble 软件源安装 `docker.io`（提供 Docker CLI，也包含 daemon 文件）、
 `docker-buildx` 和 `awscli`（AWS CLI v2 的 Ubuntu 打包版本，非 AWS 官方 ZIP 安装版）。
 这些包与系统依赖一起下载、校验并离线安装，未添加其他软件源；继续使用 Ubuntu Noble 镜像。
-Chart 不启动 Docker daemon，也不挂载 Docker socket。构建镜像还需配置可访问的 Docker daemon / BuildKit，
-推送 ECR 还需在 workflow 中获取 AWS 权限并登录目标仓库。
-不支持开箱即用的 `docker build`、容器 action、`jobs.<job>.container` 和 service containers；
-这些场景需要另行设计容器执行方案。`ubuntu24` 只是自定义匹配标签，不代表具有 GitHub 托管 runner 的完整工具集。
+Chart 默认启动 `public.ecr.aws/docker/library/docker:dind` sidecar，供 Docker CLI / buildx 构建镜像。
+推送 ECR 仍需在 workflow 中获取 AWS 权限并登录目标仓库。
+`ubuntu24` 只是自定义匹配标签，不代表具有 GitHub 托管 runner 的完整工具集。
+
+## Docker sidecar（0.4.0）
+
+`dind.enabled` 默认 true。runner 继续使用 Ubuntu，daemon 单独使用 `dind.image`。
+两个容器共享 `/var/run/docker/docker.sock`，runner 自动设置 `DOCKER_HOST`；daemon 使用 `--group=1001`
+允许 runner 用户访问。显式传入 dockerd 命令，仅监听 Unix socket，不开放 2375/2376 TCP。
+runner 注册前以 UID 1001 等待 `docker info` 成功，默认最多约 180 秒（可用 `dind.startupTimeoutSeconds` 调整），
+失败后退出并提示检查 sidecar 日志；maintenance 模式不执行此等待。就绪探针持续检查 daemon。
+daemon 后续故障会使 Pod NotReady，但不会自动暂停已运行的 GitHub runner；此时任务可能失败。
+
+`/var/lib/docker` 使用 emptyDir：容器重启保留，Pod 重建后镜像和构建缓存清空，消耗节点临时磁盘。
+两个容器也以相同路径挂载 `/persistent`，支持工作区 bind mount。其他路径不会自动共享；
+容器 actions、job containers 和 service containers 的额外挂载及网络需求尚未进行端到端验证。
+普通 sidecar 与 runner 在 Pod 终止时没有严格退出顺序，升级前需确认 runner 空闲。
+
+daemon 拉取镜像如需代理，单独使用 `dind.extraEnv` 配置 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，
+格式与 `extraEnv` 相同，可使用 Secret 引用。runner 的 `extraEnv` 不传入 daemon；Dockerfile 内部下载
+依赖所需的构建代理也应由 workflow 配置。`dind.resources` 单独设置 daemon 的 CPU/内存。
+可设置 `dind.enabled: false` 禁用 sidecar；此时不会设置 Docker 地址或等待 daemon。
+
+升级后检查（替换 namespace / Deployment 名称）：
+
+```bash
+kubectl logs -n github-runner deployment/spm-runner-runner -c docker
+kubectl exec -n github-runner deployment/spm-runner-runner -c runner -- \
+  setpriv --reuid=1001 --regid=1001 --init-groups docker info
+```
+
+随后在 workflow 中执行 `docker buildx version` 和实际构建，验证构建及 ECR 网络权限。
+本地已有 DinD 镜像时可运行 `bash tests/dind-smoke.sh`：创建临时特权 daemon，
+用 UID/GID 1001 的独立客户端通过共享 socket 构建 scratch 镜像，全程不访问镜像仓库，结束后清理临时容器及匿名卷。
 
 ## 首次安装
 
@@ -270,7 +301,7 @@ helm repo index dist --url https://charts.example.com
 发布已有仓库的新版本时应合并原索引，避免丢失历史版本。也可使用 OCI：
 
 ```bash
-helm push dist/github-runner-0.2.0.tgz oci://registry.example.com/charts
+helm push dist/github-runner-0.4.0.tgz oci://registry.example.com/charts
 ```
 
 上述发布地址都是占位地址，不会自动发布。脚本随 Chart 打包，通过 ConfigMap 挂载；

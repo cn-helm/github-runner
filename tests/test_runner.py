@@ -193,7 +193,7 @@ class ChartTests(unittest.TestCase):
         return result.stdout
 
     def test_default_retained_pvc_and_single_runner(self):
-        output = self.render()
+        output = self.render({"persistence": {"storageClass": None}})
         self.assertEqual(output.count("kind: PersistentVolumeClaim"), 1)
         self.assertIn("helm.sh/resource-policy: keep", output)
         self.assertNotIn("storageClassName:", output)
@@ -209,6 +209,27 @@ class ChartTests(unittest.TestCase):
         self.assertIn('claimName: "retained"', output)
         self.assertEqual(output.count("image: \"public.ecr.aws/ubuntu/ubuntu@sha256:"), 2)
         self.assertEqual(output.count("name: https_proxy"), 2)
+
+    def test_dind_socket_and_optional_sidecar(self):
+        output = self.render()
+        deployment = output.split("      containers:", 1)[1]
+        runner, daemon = deployment.split("        - name: docker\n", 1)
+        self.assertNotIn("privileged: true", runner)
+        self.assertIn("privileged: true", daemon)
+        self.assertIn('image: "public.ecr.aws/docker/library/docker:dind"', daemon)
+        self.assertIn("--group=1001", daemon)
+        self.assertIn("name: DOCKER_HOST", runner)
+        self.assertIn("name: RUNNER_DOCKER_WAIT_SECONDS", runner)
+        self.assertEqual(deployment.count("mountPath: /var/run/docker"), 2)
+        self.assertEqual(deployment.count("mountPath: /persistent"), 2)
+        self.assertNotIn("GITHUB_RUNNER_TOKEN", daemon)
+        disabled = self.render({"dind": {"enabled": False}}).split("      containers:", 1)[1]
+        self.assertNotIn("name: docker", disabled)
+        self.assertNotIn("name: RUNNER_DOCKER_WAIT_SECONDS", disabled)
+        self.assertNotIn("name: DOCKER_HOST", disabled)
+
+    def test_dind_invalid_timeout_rejected(self):
+        self.render({"dind": {"startupTimeoutSeconds": 0}}, success=False)
 
     def test_public_image_and_shared_packages_with_scripts(self):
         output = self.render()

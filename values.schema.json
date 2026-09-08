@@ -2,6 +2,18 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "dind": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "image": {"type": "string", "minLength": 1},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]},
+        "startupTimeoutSeconds": {"type": "integer", "minimum": 1},
+        "extraEnv": {"type": "array", "items": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "not": {"enum": ["DOCKER_TLS_CERTDIR", "DOCKER_HOST"]}}}}},
+        "resources": {"type": "object"}
+      }
+    },
     "github": {
       "type": "object",
       "additionalProperties": false,
@@ -49,6 +61,7 @@
       "type": "array",
       "items": {
         "type": "object",
+        "not": {"properties": {"name": {"enum": ["DOCKER_HOST", "RUNNER_DOCKER_WAIT_SECONDS"]}}, "required": ["name"]},
         "required": ["name"],
         "properties": {
           "name": {"type": "string", "not": {"enum": ["GITHUB_REPO", "GITHUB_RUNNER_TOKEN", "RUNNER_NAME", "RUNNER_LABELS", "RUNNER_WORK_DIR", "RUNNER_INIT_VERSION", "RUNNER_SHA256", "RUNNER_PERSISTENT_DIR", "RUNNER_PACKAGE_DIR", "RUNNER_APT_CACHE_DIR", "RUNNER_MANUALLY_TRAP_SIG"]}}
