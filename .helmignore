@@ -1,7 +1,6 @@
 .git/
 .gitignore
 .gitattributes
-image/
 tests/
 dist/
 *.tgz

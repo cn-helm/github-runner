@@ -1,7 +1,7 @@
 image:
-  # Build image/Dockerfile and set this to your registry repository.
-  repository: github-persistent-runner
-  tag: "0.1.0"
+  # Both containers must use the same Ubuntu Noble image.
+  repository: public.ecr.aws/ubuntu/ubuntu
+  tag: noble
   digest: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
@@ -12,6 +12,8 @@ github:
   tokenKey: token
 
 runner:
+  # Prepare dependencies, then sleep as UID 1001 without registering/running jobs.
+  maintenance: false
   # Empty means the Helm release name; keep stable across Pod replacements.
   name: ""
   labels: "k8s,ubuntu24"
@@ -38,7 +40,7 @@ resources:
     memory: 4Gi
 
 terminationGracePeriodSeconds: 120
-# Optional proxy variables, e.g. http_proxy, https_proxy, no_proxy.
+# Passed to both initContainer and runner, e.g. http_proxy, https_proxy, no_proxy.
 # Use extraEnv valueFrom for proxy credentials; do not put secrets in values.
 extraEnv: []
 nodeSelector:
@@ -46,3 +48,11 @@ nodeSelector:
   kubernetes.io/arch: amd64
 tolerations: []
 affinity: {}
+
+initResources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi

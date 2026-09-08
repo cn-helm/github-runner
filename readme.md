@@ -1,50 +1,51 @@
 # GitHub persistent runner
 
 在 Kubernetes 上部署一个长期运行、仓库级别的 GitHub Actions runner。
-Ubuntu 24.04 / Linux amd64，使用非 root 用户 UID/GID 1001。整个 runner 安装目录、
+直接使用公共镜像 `public.ecr.aws/ubuntu/ubuntu:noble`，无需构建或推送自定义镜像。
+Ubuntu 24.04 / Linux amd64，依赖安装完成后以 UID/GID 1001 运行 runner。整个 runner 安装目录、
 注册凭据和工作区都存放在 PVC 中，支持 runner 自身自动更新以及 Pod 重建后恢复。
 
 Chart 名称为 `github-runner`。这是单 runner Chart，不包含自动扩容、GitHub App 自动签发注册 token、Docker daemon
-或构建语言 SDK。工作流需要的工具应加入自定义镜像或通过 workflow 安装。
+或构建语言 SDK。工作流需要的额外工具可通过 workflow 安装到用户可写目录。
 
 ## 文件
 
 - `values.yaml`：Helm 默认配置。旧的 `value.yaml` 保留为空覆盖文件，原有 `-f value.yaml` 用法仍可用。
-- `image/Dockerfile`、`image/entrypoint.sh`：需要自行构建并推送的基础运行镜像及启动脚本。
-- `templates/`：单副本 Deployment、PVC 和安装提示，无 Service / Ingress。
+- `scripts/download-dependencies.sh`：initContainer 下载依赖包。
+- `scripts/start-container.sh`：主容器离线安装依赖并切换用户。
+- `scripts/runner.sh`：保留原持久化初始化、注册及运行逻辑。
+- `templates/`：单副本 Deployment、PVC、脚本 ConfigMap 和安装提示，无 Service / Ingress。
 - `tests/test_runner.py`：不访问 GitHub、不使用真实 token 的本地验证。
 
-## 准备镜像
+## 公共镜像与初始化
 
-在本目录运行，替换镜像仓库地址。默认镜像名称只是占位配置，并非已经发布的镜像。
+两个容器使用同一个 Ubuntu Noble 镜像。initContainer 的根文件系统不会传递给主容器，
+所以采用共享软件包的方式，而不是只在 initContainer 中执行 `apt install`：
 
-```bash
-docker build --platform linux/amd64 -t registry.example.com/ci/github-runner:0.1.0 ./image
-docker push registry.example.com/ci/github-runner:0.1.0
-```
+1. `dependencies` initContainer 更新 Ubuntu 官方软件源索引，将 runner 系统依赖及工具的
+   `.deb` 包下载到 `/packages`（`emptyDir`）。记录基础镜像 dpkg 状态和软件包 SHA256，完成后写入标记。
+2. 主容器确认标记、基础镜像状态和软件包校验值，将包复制到容器自身的 APT 缓存目录，
+   再使用 `apt-get --no-download` 从本地包安装。
+   此阶段不下载依赖；APT 按依赖关系安排安装顺序。
+3. 创建 runner 用户，以 `setpriv` 切换到 UID/GID 1001，再通过 tini 启动 runner。
 
-受限网络下，先为当前命令或会话设置代理 `http://165.225.112.16:10015`。
-例如为构建中的 apt 下载传递代理：
+依赖准备及安装需要 root，两个容器都不是 privileged；runner 和 workflow 进程使用非 root 用户。
+集群若强制所有容器 `runAsNonRoot`，该方案无法启动。
+通过 `kubectl exec` 新建的进程仍按容器配置使用 root；维护命令应显式切换到 runner 用户，见后文。
 
-```bash
-HTTP_PROXY=http://165.225.112.16:10015 HTTPS_PROXY=http://165.225.112.16:10015 \
-docker build --platform linux/amd64 \
-  --build-arg HTTP_PROXY=http://165.225.112.16:10015 \
-  --build-arg HTTPS_PROXY=http://165.225.112.16:10015 \
-  -t registry.example.com/ci/github-runner:0.1.0 ./image
-```
+`/packages` 只在当前 Pod 内保留，主容器只读挂载。主容器重启会重新离线安装；Pod 重建会重新下载依赖。
+这会增加启动耗时，并要求每次创建 Pod 时能访问 Ubuntu 软件源。PVC 内的 runner 程序和注册状态不受影响。
+默认 `IfNotPresent`，可通过 `image.digest` 固定 Noble 镜像以获得一致的基础环境。
+如果可变标签在同一 Pod 的两个容器中解析为不同的软件包状态，启动会明确失败，需固定 digest 后重建 Pod。
 
-基础镜像拉取由 Docker daemon / BuildKit 执行，也需要其网络可达；构建参数不配置 daemon 代理。
-代理不可用或遇到登录、认证、证书问题时停止，准备可用网络、镜像仓库权限或组织 CA，
-切换网络并确认后继续，不自动换源或更换依赖版本。
-
-镜像只内置 runner 系统依赖以及 Bash、Git、curl、jq、SSH 客户端等工具。
+默认安装 runner 系统依赖以及 Bash、Git、curl、jq、SSH 客户端等工具。
 不支持开箱即用的 `docker build`、容器 action、`jobs.<job>.container` 和 service containers；
 这些场景需要另行设计容器执行方案。`ubuntu24` 只是自定义匹配标签，不代表具有 GitHub 托管 runner 的完整工具集。
 
 ## 首次安装
 
-需要 Kubernetes、Helm、可写的 PVC，以及集群节点到镜像仓库、runner 到 GitHub 下载和 Actions 服务的网络访问。
+需要 Kubernetes、Helm、可写的 PVC、节点到公共镜像仓库的访问，以及 Pod 到 Ubuntu 官方软件源、
+GitHub 下载和 Actions 服务的网络访问。无需本地 Docker。
 StorageClass 应支持 UID/GID 1001 写入、目录原子重命名及跨 Pod 有效的 `flock` 文件锁。
 若存储驱动不应用 `fsGroup`，应由存储管理员预置目录权限。
 
@@ -65,8 +66,8 @@ unset RUNNER_TOKEN
 
 ```yaml
 image:
-  repository: registry.example.com/ci/github-runner
-  tag: "0.1.0"
+  repository: public.ecr.aws/ubuntu/ubuntu
+  tag: noble
 github:
   repo: cn-ph-spm/spm
   existingSecret: github-runner-registration
@@ -82,6 +83,12 @@ persistence:
 helm lint . --strict -f runner.local.yaml
 helm upgrade --install spm-runner . -n github-runner -f runner.local.yaml
 kubectl logs -n github-runner deployment/spm-runner-runner -f
+```
+
+如果 Pod 停留在 Init 阶段，查看依赖下载日志：
+
+```bash
+kubectl logs -n github-runner deployment/spm-runner-runner -c dependencies -f
 ```
 
 在 GitHub 界面确认 runner Online，再运行 workflow：
@@ -101,7 +108,7 @@ jobs:
           echo "Persistent runner is working"
 ```
 
-如需运行时代理，在覆盖文件中设置（集群内必须能访问该代理）：
+受限网络下，在安装前为 initContainer 和主容器设置代理（集群内必须能访问该代理）：
 
 ```yaml
 extraEnv:
@@ -114,9 +121,16 @@ extraEnv:
 ```
 
 带凭据的代理使用 `extraEnv[].valueFrom.secretKeyRef`，不要在 values 中保存密码。
-代理设置也会被 workflow 子进程继承。私有镜像凭据使用 `imagePullSecrets` 引用现有 Secret。
+同一份 `extraEnv` 传给两个容器，initContainer 会将大写代理变量映射到 APT 使用的小写变量；
+代理设置也会被 workflow 子进程继承。镜像拉取由节点的容器运行时负责，Pod 环境变量不配置节点代理。
+代理不可用或遇到登录、认证、证书问题时停止相关操作，准备可用网络、权限或组织 CA，
+切换网络并确认后继续，不自动换源或更换依赖版本。
+APT 下载没有脚本内重试或源回退；Kubernetes 会按重启策略重启失败的 initContainer。
+排查网络期间可将 Deployment 缩容为 0，避免持续尝试。
 
 ## 启动与更新
+
+每次 Pod 创建先完成上述依赖阶段，随后以下步骤以 runner 用户执行：
 
 1. 获取 `/persistent/.runner.lock`，同一 PVC 的第二个 runner 立即报错退出。
 2. 首次安装时下载到 `/persistent/.runner-install`，严格校验 SHA256，解压完成后原子移动到
@@ -139,13 +153,15 @@ Kubernetes 的 Ready 或 Helm `--wait` 不代表 GitHub Online，需要结合 Gi
 
 默认终止宽限时间 120 秒只保证一定的退出时间，不保证正在执行的 job 完成。
 升级、重启和维护前，在 GitHub 确认 runner 空闲，并暂停可能投递新 job 的工作流。
-操作系统及构建工具不会随 runner 自动更新，仍需定期重建镜像并升级 image tag/digest。
+操作系统及构建工具不会随 runner 自动更新；新 Pod 会从配置的软件源重新解析依赖版本，
+基础镜像则按 `image.pullPolicy` 和 tag/digest 获取。当前不承诺 APT 包版本完全可重复。
+更新基础镜像应更新 Noble digest 或明确拉取策略，不需要构建自定义镜像。
 
 ## 主要配置
 
 | 配置                                            | 默认值 / 说明                                                     |
 | ----------------------------------------------- | ----------------------------------------------------------------- |
-| `image.repository`, `image.tag`             | 自行构建并推送的镜像，默认 `github-persistent-runner:0.1.0`     |
+| `image.repository`, `image.tag`             | 公共镜像 `public.ecr.aws/ubuntu/ubuntu:noble`，两个容器共用 |
 | `image.digest`                                | 可选 SHA256 digest，设置后优先于 tag                              |
 | `github.repo`                                 | `cn-ph-spm/spm`，仅支持 github.com 仓库级 runner                |
 | `github.existingSecret`, `github.tokenKey`  | `github-runner-registration` / `token`                        |
@@ -157,6 +173,8 @@ Kubernetes 的 Ready 或 Helm `--wait` 不代表 GitHub Online，需要结合 Gi
 | `persistence.size`                            | `20Gi`；已有 PVC 扩容取决于 StorageClass，不支持缩容            |
 | `persistence.retain`                          | true，卸载时保留 Chart 创建的 PVC；不改变底层 PV reclaim policy   |
 | `resources`                                   | requests 250m / 512Mi，limits 2 CPU / 4Gi，按构建负载调整         |
+| `initResources` | initContainer 默认 requests 250m / 256Mi，limits 1 CPU / 1Gi |
+| `runner.maintenance` | false；true 时准备依赖后以 UID 1001 等待，不注册、不接收任务 |
 | `terminationGracePeriodSeconds`               | 120                                                               |
 | `nodeSelector`, `tolerations`, `affinity` | 节点调度；当前实现只支持 Linux amd64                              |
 
@@ -177,14 +195,18 @@ Kubernetes 的 Ready 或 Helm `--wait` 不代表 GitHub Online，需要结合 Gi
 
 1. 确认无正在执行的 job，暂停新任务，执行
    `kubectl scale deployment/spm-runner-runner -n github-runner --replicas=0`，等待原 Pod 完全退出。
-2. 备份 PVC。用临时维护 Pod 挂载同一个 PVC 到 `/persistent`，使用相同 runner 镜像、
-   UID/GID 1001 和 `fsGroup: 1001`，将 command 覆盖为 `[/bin/bash, -c, "sleep infinity"]`。
-   此时不要同时运行 runner Pod。
-3. 在维护 Pod 的 `/persistent/gh-runner` 执行 `./config.sh remove --token <REMOVE_TOKEN>`；
+2. 备份 PVC。使用同一个 release 和原覆盖文件启用维护模式：
+   `helm upgrade spm-runner . -n github-runner -f runner.local.yaml --set runner.maintenance=true`。
+   Chart 恢复一个 Pod，准备依赖后只执行 sleep，不连接 GitHub。
+   使用 `kubectl exec -it -n github-runner deployment/spm-runner-runner -c runner -- setpriv --reuid=1001 --regid=1001 --init-groups --no-new-privs /bin/bash`
+   进入非 root 维护终端。
+3. 在 `/persistent/gh-runner` 执行 `./config.sh remove --token <REMOVE_TOKEN>`；
    从 GitHub 的 Remove runner 流程取得移除 token，使用 shell 交互变量传入，避免写入命令历史。
    成功后删除 `.chart-registration` 和可能残留的 `.chart-registration.tmp`。
    若无法正常移除，先在 GitHub 清理旧记录，再备份并重命名整个 `gh-runner` 目录，使用全新目录初始化。
-4. 删除维护 Pod，准备有效的**注册 token**，更新配置，通过上述 `helm upgrade --install` 恢复一个副本。
+4. 准备有效的**注册 token**，更新配置，执行
+   `helm upgrade spm-runner . -n github-runner -f runner.local.yaml --set runner.maintenance=false`
+   退出维护模式并恢复 runner。
 
 不要每次 Pod 退出都注销 runner。永久下线时，按维护步骤移除 GitHub 注册后卸载：
 
@@ -205,7 +227,7 @@ helm uninstall spm-runner -n github-runner
 在 WSL Bash 中执行；仓库没有 Python 虚拟环境时，测试只使用系统 Python 标准库：
 
 ```bash
-bash -n image/entrypoint.sh
+for script in scripts/*.sh; do bash -n "$script"; done
 helm lint . --strict
 python3 -m unittest discover -s tests -v
 helm template smoke . -f value.yaml > /tmp/github-runner.yaml
@@ -215,10 +237,21 @@ helm package . --destination dist
 本地测试模拟下载和注册，检查持久化恢复、校验失败、文件锁、配置变化及 Helm 渲染；
 不能替代真实容器、存储驱动和 GitHub 端到端验证。部署验收包括：
 
-1. 构建镜像，验证非 root 启动及运行库依赖，确认 runner Online 并完成示例 workflow。
+1. 确认 initContainer 完成下载、主容器完成离线安装，runner Online，示例 workflow 中 `id` 输出 UID 1001。
 2. 空闲时删除 Pod，确认新 Pod 使用同一个 runner ID，且没有再次下载初始安装包。
 3. runner 实际自动更新后记录 `bin/Runner.Listener --version`，重建 Pod，确认版本保持，重新完成 workflow。
 4. 在空闲时执行 Helm 镜像升级，确认无两个 runner 同时运行；测试 PVC 保留及复用恢复。
+
+可选的真实容器冒烟测试（需要 Docker，无需 GitHub token）：
+
+```bash
+export HTTP_PROXY=http://165.225.112.16:10015 HTTPS_PROXY=http://165.225.112.16:10015
+docker pull public.ecr.aws/ubuntu/ubuntu:noble
+bash tests/container-smoke.sh
+```
+
+该测试用两个独立容器共享临时卷，主容器禁用网络以验证离线安装，检查系统依赖和 UID/GID 1001，
+结束后清理测试容器和临时卷。它不注册 GitHub runner，也不访问现有 PVC。
 
 HTTP Chart 仓库：将 `dist/` 中生成的包和索引发布到自己的静态站点。
 
@@ -229,12 +262,15 @@ helm repo index dist --url https://charts.example.com
 发布已有仓库的新版本时应合并原索引，避免丢失历史版本。也可使用 OCI：
 
 ```bash
-helm push dist/github-runner-0.1.0.tgz oci://registry.example.com/charts
+helm push dist/github-runner-0.2.0.tgz oci://registry.example.com/charts
 ```
 
-上述地址都是占位地址，不会自动发布。镜像和 Chart 分别发布，修改入口脚本后必须重新构建镜像。
-每次正式发布增加 Chart version；修改镜像时也增加镜像 tag，并同步 `values.yaml`。
+上述发布地址都是占位地址，不会自动发布。脚本随 Chart 打包，通过 ConfigMap 挂载；
+修改脚本后执行 Helm 升级即可，Pod 模板中的脚本校验值变化会触发重建，无需构建镜像。
+每次正式发布增加 Chart version。升级到 0.2.0 时移除旧覆盖文件中的自定义镜像地址，
+确保最终使用 Noble 公共镜像；保持原 runner 名称、注册设置及 PVC，即可复用已有状态。
 
 参考：[注册 runner](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/adding-self-hosted-runners)、
 [runner 参数](https://github.com/actions/runner/blob/v2.337.0/src/Runner.Listener/Runner.cs)、
-[官方运行脚本](https://github.com/actions/runner/blob/v2.337.0/src/Misc/layoutroot/run.sh)。
+[官方运行脚本](https://github.com/actions/runner/blob/v2.337.0/src/Misc/layoutroot/run.sh)、
+[Kubernetes initContainers](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/)。

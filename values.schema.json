@@ -17,6 +17,7 @@
       "additionalProperties": false,
       "required": ["name", "labels", "workDir", "initVersion", "sha256"],
       "properties": {
+        "maintenance": {"type": "boolean"},
         "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]*$"},
         "labels": {"type": "string", "minLength": 1, "pattern": "^[^\\r\\n]+$"},
         "workDir": {"type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*$", "not": {"enum": ["bin", "externals"]}},
@@ -50,7 +51,7 @@
         "type": "object",
         "required": ["name"],
         "properties": {
-          "name": {"type": "string", "not": {"enum": ["GITHUB_REPO", "GITHUB_RUNNER_TOKEN", "RUNNER_NAME", "RUNNER_LABELS", "RUNNER_WORK_DIR", "RUNNER_INIT_VERSION", "RUNNER_SHA256", "RUNNER_PERSISTENT_DIR", "RUNNER_MANUALLY_TRAP_SIG"]}}
+          "name": {"type": "string", "not": {"enum": ["GITHUB_REPO", "GITHUB_RUNNER_TOKEN", "RUNNER_NAME", "RUNNER_LABELS", "RUNNER_WORK_DIR", "RUNNER_INIT_VERSION", "RUNNER_SHA256", "RUNNER_PERSISTENT_DIR", "RUNNER_PACKAGE_DIR", "RUNNER_APT_CACHE_DIR", "RUNNER_MANUALLY_TRAP_SIG"]}}
         },
         "oneOf": [
           {"required": ["value"], "properties": {"value": {"type": "string"}}, "not": {"required": ["valueFrom"]}},

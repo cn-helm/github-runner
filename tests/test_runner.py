@@ -12,7 +12,7 @@ import time
 import unittest
 
 CHART = Path(__file__).resolve().parents[1]
-ENTRYPOINT = CHART / "image" / "entrypoint.sh"
+ENTRYPOINT = CHART / "scripts" / "runner.sh"
 
 
 class RunnerTests(unittest.TestCase):
@@ -207,8 +207,42 @@ class ChartTests(unittest.TestCase):
                               "extraEnv": [{"name": "https_proxy", "value": "http://proxy:8080"}]})
         self.assertNotIn("kind: PersistentVolumeClaim", output)
         self.assertIn('claimName: "retained"', output)
-        self.assertIn("github-persistent-runner@sha256:", output)
-        self.assertIn("name: https_proxy", output)
+        self.assertEqual(output.count("image: \"public.ecr.aws/ubuntu/ubuntu@sha256:"), 2)
+        self.assertEqual(output.count("name: https_proxy"), 2)
+
+    def test_public_image_and_shared_packages_with_scripts(self):
+        output = self.render()
+        self.assertEqual(output.count('image: "public.ecr.aws/ubuntu/ubuntu:noble"'), 2)
+        self.assertIn("checksum/scripts:", output)
+        self.assertIn("kind: ConfigMap", output)
+        for script in ("download-dependencies.sh", "start-container.sh", "runner.sh"):
+            self.assertIn(f"  {script}: |", output)
+        init, main = output.split("      initContainers:", 1)[1].split("      containers:", 1)
+        self.assertNotIn("GITHUB_RUNNER_TOKEN", init)
+        self.assertNotIn("mountPath: /persistent", init)
+        self.assertIn("mountPath: /packages", init)
+        self.assertIn("mountPath: /packages\n              readOnly: true", main)
+        self.assertIn("args: [/bin/bash, /opt/runner-scripts/runner.sh]", main)
+
+    def test_maintenance_prepares_environment_without_running_listener(self):
+        output = self.render({"runner": {"maintenance": True}})
+        self.assertIn("args: [/bin/sleep, infinity]", output)
+        self.assertNotIn("args: [/bin/bash, /opt/runner-scripts/runner.sh]", output)
+
+    def test_packaged_chart_includes_bootstrap_scripts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = subprocess.run(["helm", "package", str(CHART), "--destination", temp],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            package = next(Path(temp).glob("*.tgz"))
+            with tarfile.open(package) as archive:
+                names = archive.getnames()
+                for script in ("download-dependencies.sh", "start-container.sh", "runner.sh"):
+                    self.assertIn(f"github-runner/scripts/{script}", names)
+            rendered = subprocess.run(["helm", "template", "packaged", str(package)],
+                                      capture_output=True, text=True, timeout=30)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            self.assertIn("  download-dependencies.sh: |", rendered.stdout)
 
     def test_storage_class_empty_named_and_retention_disabled(self):
         for value in ("", "fast"):

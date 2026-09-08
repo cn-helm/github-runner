@@ -13,15 +13,14 @@ spec:
       {{- include "github-runner.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        checksum/scripts: {{ include (print $.Template.BasePath "/scripts.yaml") . | sha256sum }}
       labels:
         {{- include "github-runner.selectorLabels" . | nindent 8 }}
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1001
-        runAsGroup: 1001
         fsGroup: 1001
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
@@ -30,18 +29,50 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      containers:
-        - name: runner
-          {{- if .Values.image.digest }}
-          image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}
-          {{- else }}
-          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
-          {{- end }}
+      initContainers:
+        - name: dependencies
+          image: {{ include "github-runner.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/bin/bash, /opt/runner-scripts/download-dependencies.sh]
           securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.initResources | nindent 12 }}
+          volumeMounts:
+            - name: packages
+              mountPath: /packages
+            - name: scripts
+              mountPath: /opt/runner-scripts
+              readOnly: true
+      containers:
+        - name: runner
+          image: {{ include "github-runner.image" . | quote }}
+          command: [/bin/bash, /opt/runner-scripts/start-container.sh]
+          {{- if .Values.runner.maintenance }}
+          args: [/bin/sleep, infinity]
+          {{- else }}
+          args: [/bin/bash, /opt/runner-scripts/runner.sh]
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            # Root only for offline package installation; script drops to UID 1001.
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
           env:
             - name: GITHUB_REPO
               value: {{ required "github.repo is required" .Values.github.repo | quote }}
@@ -70,7 +101,18 @@ spec:
           volumeMounts:
             - name: persistent
               mountPath: /persistent
+            - name: packages
+              mountPath: /packages
+              readOnly: true
+            - name: scripts
+              mountPath: /opt/runner-scripts
+              readOnly: true
       volumes:
+        - name: packages
+          emptyDir: {}
+        - name: scripts
+          configMap:
+            name: {{ include "github-runner.name" . }}-scripts
         - name: persistent
           persistentVolumeClaim:
             claimName: {{ default (include "github-runner.name" .) .Values.persistence.existingClaim | quote }}
