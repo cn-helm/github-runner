@@ -2,5 +2,5 @@ apiVersion: v2
 name: github-runner
 description: A single persistent GitHub Actions runner with automatic runner updates
 type: application
-version: 0.4.1
+version: 0.4.2
 appVersion: "2.337.0"

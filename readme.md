@@ -93,8 +93,28 @@ StorageClass 应支持 UID/GID 1001 写入、目录原子重命名及跨 Pod 有
 若存储驱动不应用 `fsGroup`，应由存储管理员预置目录权限。
 
 在 GitHub 仓库 Settings → Actions → Runners → New self-hosted runner 获取**注册 token**，
-不是 PAT。注册 token 通常一小时过期，应临近首次启动时创建 Secret。
-使用交互读取避免将 token 字面值写入 shell 历史：
+不是 PAT。注册 token 通常一小时过期，应临近首次启动时获取。
+
+从 Chart 0.4.2 起，在 Rancher 安装/升级应用的 **Customize** 页面，展开 **GitHub Runner**，
+填写仓库和密码输入框 **GITHUB_RUNNER_TOKEN** 即可，无需预先创建 Secret。
+该字段对应 `github.token`；非空时优先使用它，留空时回退到 `github.existingSecret`。
+两者都为空时不注入 token，适用于已有注册状态的 PVC。
+
+命令行也可以直接传入同一字段（`xxx` 替换为有效注册 token）：
+
+```bash
+helm upgrade --install spm . -n github-runner --create-namespace \
+  -f runner.local.yaml --set github.token=xxx
+```
+
+直接输入真实值会进入 shell 历史；需要避免历史记录时可用 `read -rsp 'Runner token: ' RUNNER_TOKEN`，
+再传入 `--set-string github.token="$RUNNER_TOKEN"`，执行完 `unset RUNNER_TOKEN`。
+
+注册成功后，可以在 Rancher 升级应用时清空 token；runner 会继续复用 PVC 中的凭据。
+密码输入框只遮盖界面显示：token 仍保存在 Helm values/release 历史和 Deployment 环境变量中。
+清空仅更新当前配置，不会清除旧 release 或旧 ReplicaSet 中的记录。不要将真实 token 提交到 Git。
+
+若仍使用 Secret 注入，可按以下兼容方式安装；在 UI 直接填写 token 时跳过这一步：
 
 ```bash
 kubectl create namespace github-runner
@@ -210,6 +230,7 @@ Kubernetes 的 Ready 或 Helm `--wait` 不代表 GitHub Online，需要结合 Gi
 | `image.repository`, `image.tag`             | 公共镜像 `public.ecr.aws/ubuntu/ubuntu:noble`，两个容器共用 |
 | `image.digest`                                | 可选 SHA256 digest，设置后优先于 tag                              |
 | `github.repo`                                 | `cn-ph-spm/spm`，仅支持 github.com 仓库级 runner                |
+| `github.token` | Rancher Customize 的 GITHUB_RUNNER_TOKEN，默认空；填写后优先于 Secret |
 | `github.existingSecret`, `github.tokenKey`  | `github-runner-registration` / `token`                        |
 | `runner.name`                                 | 留空使用 Helm release 名称；同一仓库内须唯一                      |
 | `runner.labels`                               | `k8s,ubuntu24`，保留默认 self-hosted / Linux / X64 标签         |
@@ -226,7 +247,7 @@ Kubernetes 的 Ready 或 Helm `--wait` 不代表 GitHub Online，需要结合 Gi
 
 ## 恢复、配置变更与卸载
 
-- **token 过期 / 缺失**：空 PVC 注册前需要更新 Secret。通过相同的交互读取流程获取新值，
+- **token 过期 / 缺失**：在 Rancher Customize 填写新的注册 token 并升级应用。使用 Secret 时，空 PVC 注册前需要更新 Secret。通过相同的交互读取流程获取新值，
   将 Secret 创建命令加 `--dry-run=client -o yaml | kubectl apply -f -`，然后重启 Deployment。
   已注册 PVC 重启不依赖此 Secret，可以删除过期的注册 Secret。
 - **注册失败或凭据不完整**：启动会保留现场并报错，不自动删除凭据或抢占同名 runner。
@@ -308,7 +329,7 @@ helm repo index dist --url https://charts.example.com
 发布已有仓库的新版本时应合并原索引，避免丢失历史版本。也可使用 OCI：
 
 ```bash
-helm push dist/github-runner-0.4.1.tgz oci://registry.example.com/charts
+helm push dist/github-runner-0.4.2.tgz oci://registry.example.com/charts
 ```
 
 上述发布地址都是占位地址，不会自动发布。脚本随 Chart 打包，通过 ConfigMap 挂载；

@@ -23,6 +23,10 @@ dind:
 
 github:
   repo: cn-ph-spm/spm
+  # Rancher Customize input; takes precedence over existingSecret when non-empty.
+  # Stored in Helm release values. Clear after registration; history still retains it.
+  token: ""
+  # Optional fallback for existing deployments and Secret-based installation.
   existingSecret: github-runner-registration
   tokenKey: token
 

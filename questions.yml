@@ -1,0 +1,15 @@
+questions:
+  - variable: github.repo
+    default: org/repo
+    type: string
+    required: true
+    label: GitHub repository
+    description: "Repository in owner/repository format."
+    group: GitHub Runner
+  - variable: github.token
+    default: ""
+    type: password
+    required: false
+    label: GITHUB_RUNNER_TOKEN
+    description: "Registration token for first startup or re-registration. Overrides the Secret when filled. Leave empty for an already registered PVC. Saved in Helm release history; password masking only hides the UI input."
+    group: GitHub Runner

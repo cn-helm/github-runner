@@ -9,7 +9,8 @@ Pod Running/Ready alone does not confirm GitHub connectivity.
 Both containers use the public Ubuntu Noble image. No image build is required.
 Check dependency initialization with:
   kubectl logs -n {{ .Release.Namespace }} deployment/{{ include "github-runner.name" . }} -c dependencies
-Create the registration Secret described in readme.md before first startup.
+For first startup, enter GITHUB_RUNNER_TOKEN in Rancher Customize
+(github.token), or use the existing registration Secret.
 Registration is reused from the PVC on restart.
 {{ if .Values.persistence.retain }}
 Chart-created PVCs are retained on uninstall. Reinstall with

@@ -61,7 +61,7 @@ if [[ -f .runner ]]; then
 else
     [[ ! -e .credentials && ! -e .credentials_rsaparams && ! -e .chart-registration ]] || \
         fail 'Partial registration found; inspect PVC and re-register explicitly.'
-    [[ -n "${GITHUB_RUNNER_TOKEN:-}" ]] || fail 'First registration requires a valid token in the configured Secret.'
+    [[ -n "${GITHUB_RUNNER_TOKEN:-}" ]] || fail 'First registration requires a valid token from Rancher Customize (github.token) or the configured Secret.'
     ./config.sh --unattended \
         --url "https://github.com/$GITHUB_REPO" \
         --token "$GITHUB_RUNNER_TOKEN" \

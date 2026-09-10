@@ -231,6 +231,32 @@ class ChartTests(unittest.TestCase):
     def test_dind_invalid_timeout_rejected(self):
         self.render({"dind": {"startupTimeoutSeconds": 0}}, success=False)
 
+    def test_customize_token_only_reaches_runner_and_overrides_secret(self):
+        output = self.render({"github": {"token": "fake-customize-token"}})
+        init, containers = output.split("      initContainers:", 1)[1].split("      containers:", 1)
+        runner, daemon = containers.split("        - name: docker\n", 1)
+        self.assertNotIn("fake-customize-token", init)
+        self.assertNotIn("fake-customize-token", daemon)
+        self.assertEqual(output.count('value: "fake-customize-token"'), 1)
+        self.assertIn("name: GITHUB_RUNNER_TOKEN", runner)
+        self.assertNotIn("secretKeyRef:", runner)
+
+    def test_empty_customize_token_preserves_secret_fallback(self):
+        output = self.render({"github": {"token": "", "existingSecret": "legacy-secret"}})
+        runner = output.split("      containers:", 1)[1].split("        - name: docker\n", 1)[0]
+        self.assertIn('name: "legacy-secret"', runner)
+        self.assertIn("optional: true", runner)
+        self.assertEqual(runner.count("name: GITHUB_RUNNER_TOKEN"), 1)
+
+    def test_registered_pvc_can_omit_both_token_sources(self):
+        output = self.render({"github": {"token": "", "existingSecret": ""}})
+        runner = output.split("      containers:", 1)[1].split("        - name: docker\n", 1)[0]
+        self.assertNotIn("name: GITHUB_RUNNER_TOKEN", runner)
+
+    def test_token_can_be_set_on_command_line(self):
+        self.assertEqual(self.render({"github": {"token": "fake-cli-token"}}),
+                         self.render(extra_args=("--set", "github.token=fake-cli-token")))
+
     def test_public_image_and_shared_packages_with_scripts(self):
         output = self.render()
         self.assertEqual(output.count('image: "public.ecr.aws/ubuntu/ubuntu:noble"'), 2)
@@ -258,6 +284,10 @@ class ChartTests(unittest.TestCase):
             package = next(Path(temp).glob("*.tgz"))
             with tarfile.open(package) as archive:
                 names = archive.getnames()
+                self.assertIn("github-runner/questions.yml", names)
+                questions = archive.extractfile("github-runner/questions.yml").read().decode()
+                self.assertIn("variable: github.token", questions)
+                self.assertIn("type: password", questions)
                 for script in ("download-dependencies.sh", "start-container.sh", "runner.sh"):
                     self.assertIn(f"github-runner/scripts/{script}", names)
             rendered = subprocess.run(["helm", "template", "packaged", str(package)],

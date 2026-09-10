@@ -82,6 +82,10 @@ spec:
             - name: RUNNER_DOCKER_WAIT_SECONDS
               value: {{ .Values.dind.startupTimeoutSeconds | quote }}
             {{- end }}
+            {{- if .Values.github.token }}
+            - name: GITHUB_RUNNER_TOKEN
+              value: {{ .Values.github.token | quote }}
+            {{- else if .Values.github.existingSecret }}
             - name: GITHUB_RUNNER_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -89,6 +93,7 @@ spec:
                   key: {{ .Values.github.tokenKey | quote }}
                   # A registered PVC can restart without a registration token.
                   optional: true
+            {{- end }}
             - name: RUNNER_NAME
               value: {{ default .Release.Name .Values.runner.name | quote }}
             - name: RUNNER_LABELS

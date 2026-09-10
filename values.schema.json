@@ -20,7 +20,8 @@
       "required": ["repo", "existingSecret", "tokenKey"],
       "properties": {
         "repo": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
-        "existingSecret": {"type": "string", "minLength": 1},
+        "token": {"type": "string"},
+        "existingSecret": {"type": "string"},
         "tokenKey": {"type": "string", "minLength": 1}
       }
     },
