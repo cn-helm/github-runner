@@ -1,4 +1,6 @@
 .git/
+.github/
+.helm-repository/
 .gitignore
 .gitattributes
 tests/

@@ -22,7 +22,7 @@ dind:
       memory: 4Gi
 
 github:
-  repo: cn-ph-spm/spm
+  repo: fake-org/fake-repo
   # Rancher Customize input; takes precedence over existingSecret when non-empty.
   # Stored in Helm release values. Clear after registration; history still retains it.
   token: ""

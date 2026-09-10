@@ -1,0 +1,69 @@
+name: Publish Helm repository
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Chart.yaml
+      - values.yaml
+      - value.yaml
+      - values.schema.json
+      - questions.yml
+      - scripts/**
+      - readme.md
+      - templates/**
+      - .helmignore
+      - .github/workflows/publish-helm-repository.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: helm-repository
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out chart source
+        uses: actions/checkout@v4
+
+      - name: Check out existing repository artifacts
+        id: existing_repository
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: .helm-repository
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Package chart and update index
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository_dir=.helm-repository
+          repository_url="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+
+          mkdir -p "${repository_dir}"
+          helm lint . --strict
+          helm package . --destination "${repository_dir}"
+
+          if [[ -f "${repository_dir}/index.yaml" ]]; then
+            helm repo index "${repository_dir}" \
+              --url "${repository_url}" \
+              --merge "${repository_dir}/index.yaml"
+          else
+            helm repo index "${repository_dir}" --url "${repository_url}"
+          fi
+
+      - name: Publish repository to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: .helm-repository

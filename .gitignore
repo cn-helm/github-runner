@@ -2,3 +2,4 @@ dist/
 *.tgz
 __pycache__/
 *.local.yaml
+.helm-repository/

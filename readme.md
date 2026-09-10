@@ -320,6 +320,22 @@ bash tests/container-smoke.sh
 该测试用两个独立容器共享临时卷，主容器禁用网络以验证离线安装，检查系统依赖、Docker CLI、buildx、AWS CLI v2 和 UID/GID 1001，
 结束后清理测试容器和临时卷。它不注册 GitHub runner，也不访问现有 PVC。
 
+### GitHub Pages 自动发布
+
+`.github/workflows/publish-helm-repository.yaml` 沿用 dbgate 的发布流程。
+推送到 `main` 且修改 Chart、values、schema、Customize 表单、脚本、模板或文档时自动触发，
+也可在 GitHub Actions 页面手动运行 **Publish Helm repository**。
+流程先执行 `helm lint . --strict`，再打包 Chart，合并现有索引，并发布到 `gh-pages` 分支。
+首次发布时允许 `gh-pages` 不存在；后续发布保留旧版本安装包。
+
+仓库需允许 Actions 写入内容，并在 **Settings → Pages** 设置
+**Deploy from a branch → gh-pages → / (root)**（首次运行创建分支后设置）。
+仓库地址自动生成为 `https://<GitHub owner>.github.io/<repository name>`，可用于 Rancher Chart 仓库。
+发布新内容前递增 `Chart.yaml` 的 `version`，避免覆盖同版本安装包。
+`.helm-repository/` 是本地发布暂存目录，已从 Git 和 Chart 打包中排除。
+
+### 手动发布
+
 HTTP Chart 仓库：将 `dist/` 中生成的包和索引发布到自己的静态站点。
 
 ```bash
