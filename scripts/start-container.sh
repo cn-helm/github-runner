@@ -19,6 +19,13 @@ mkdir -p "$cache/partial"
 cp -- "${archives[@]}" "$cache/"
 apt-get -o "Dir::Cache::archives=$cache" --no-download --no-install-recommends \
     install -y "$cache"/*.deb
+installer=$(mktemp -d)
+trap 'rm -rf -- "$installer"' EXIT
+unzip -q "$packages/awscliv2.zip" -d "$installer"
+"$installer/aws/install" --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin
+aws --version
+rm -rf -- "$installer"
+trap - EXIT
 groupadd --gid 1001 runner
 useradd --uid 1001 --gid 1001 --create-home --shell /bin/bash runner
 export HOME=/home/runner USER=runner LOGNAME=runner

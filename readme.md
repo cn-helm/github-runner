@@ -41,8 +41,15 @@ Chart 名称为 `github-runner`。这是单 runner Chart，不包含自动扩容
 
 默认安装 runner 系统依赖以及 Bash、Git、curl、jq、SSH 客户端等工具。
 同时从 Ubuntu Noble 软件源安装 `docker.io`（提供 Docker CLI，也包含 daemon 文件）、
-`docker-buildx` 和 `awscli`（AWS CLI v2 的 Ubuntu 打包版本，非 AWS 官方 ZIP 安装版）。
-这些包与系统依赖一起下载、校验并离线安装，未添加其他软件源；继续使用 Ubuntu Noble 镜像。
+`docker-buildx`。从 0.4.1 起，AWS CLI v2 使用 [AWS 官方 ZIP 安装器](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)，不依赖 APT 的 `awscli` 包。
+initContainer 先缓存全部 Debian 依赖，再离线安装 curl、CA 证书和 unzip，随后从
+`https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip` 下载 Linux x86_64 安装包。
+主容器校验共享缓存后，离线解压并运行 `aws/install`，安装到 `/usr/local/aws-cli`，
+命令链接放在 `/usr/local/bin`，执行 `aws --version` 后清理临时解压目录。
+ZIP 保留在当前 Pod 的共享临时卷中，供主容器重启使用，Pod 删除时一起回收。
+初始化阶段还需能通过 HTTPS 访问 `awscli.amazonaws.com`；该 URL 跟随最新 v2，未固定 AWS CLI 版本。
+缓存 SHA256 用于检测下载完成后的文件损坏，不替代 AWS 发布签名验证。
+Docker CLI 和 buildx 仍与系统依赖一起从 Ubuntu 软件源下载、校验并离线安装；继续使用 Ubuntu Noble 镜像。
 Chart 默认启动 `public.ecr.aws/docker/library/docker:dind` sidecar，供 Docker CLI / buildx 构建镜像。
 推送 ECR 仍需在 workflow 中获取 AWS 权限并登录目标仓库。
 `ubuntu24` 只是自定义匹配标签，不代表具有 GitHub 托管 runner 的完整工具集。
@@ -301,7 +308,7 @@ helm repo index dist --url https://charts.example.com
 发布已有仓库的新版本时应合并原索引，避免丢失历史版本。也可使用 OCI：
 
 ```bash
-helm push dist/github-runner-0.4.0.tgz oci://registry.example.com/charts
+helm push dist/github-runner-0.4.1.tgz oci://registry.example.com/charts
 ```
 
 上述发布地址都是占位地址，不会自动发布。脚本随 Chart 打包，通过 ConfigMap 挂载；
