@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GitHub persistent runner</title>
+<style>
+:root { color-scheme: light dark; }
+body { margin: 0 auto; max-width: 1040px; padding: 24px;
+       font: 16px/1.65 system-ui, sans-serif; overflow-wrap: anywhere; }
+a { color: light-dark(#075bb5, #8dc6ff); }
+nav { display: flex; flex-wrap: wrap; gap: 20px; border-bottom: 1px solid #8886;
+      padding-bottom: 16px; margin-bottom: 24px; }
+h1, h2, h3 { line-height: 1.25; margin-top: 1.6em; }
+pre { overflow-x: auto; padding: 16px; background: #8882; border-radius: 6px; }
+code { font-family: ui-monospace, monospace; font-size: .9em; }
+table { display: block; overflow-x: auto; border-collapse: collapse; }
+th, td { border: 1px solid #8886; padding: 8px 12px; text-align: left; }
+@media (max-width: 600px) { body { padding: 16px; } }
+</style>
+</head>
+<body>
+<nav aria-label="Documentation">
+<a href="index.html" lang="en">English</a>
+<a href="readme.zh.html" lang="zh-CN">简体中文</a>
+<a href="index.yaml">Helm index</a>
+<a href="readme.md">Markdown</a>
+</nav>
+<main><h1 id="github-persistent-runner">GitHub persistent runner</h1>
+<p>English | <a href="readme.zh.html">简体中文</a></p>
+<p>Deploy a long-running, repository-level GitHub Actions runner on Kubernetes. The chart uses the public <code>public.ecr.aws/ubuntu/ubuntu:noble</code> image directly, without building or pushing a custom image. It runs on Ubuntu 24.04 / Linux amd64. After dependency installation, the runner runs as UID/GID 1001. The entire runner installation, registration credentials, and workspace reside on a PVC, allowing automatic runner updates and recovery after Pod recreation.</p>
+<p>The chart is named <code>github-runner</code>. It deploys one runner and does not include autoscaling, automatic registration token issuance through a GitHub App, or language SDKs. Workflows can install additional tools in user-writable directories.</p>
+<h2 id="files">Files</h2>
+<ul>
+<li><code>values.yaml</code>: Helm defaults. The legacy <code>value.yaml</code> remains an empty override file, so existing <code>-f value.yaml</code> commands still work.</li>
+<li><code>scripts/download-dependencies.sh</code>: downloads dependency packages in the initContainer.</li>
+<li><code>scripts/start-container.sh</code>: installs dependencies offline in the main container and switches users.</li>
+<li><code>scripts/runner.sh</code>: handles persistent initialization, registration, and execution.</li>
+<li><code>templates/</code>: a single-replica Deployment, PVC, script ConfigMap, and installation notes. No Service or Ingress is required.</li>
+<li><code>tests/test_runner.py</code>: local checks that do not contact GitHub or use real tokens.</li>
+<li><code>readme.md</code> / <code>readme.zh.md</code>: English and Simplified Chinese documentation.</li>
+<li><code>docs/render.py</code>: renders both READMEs as static GitHub Pages documentation.</li>
+</ul>
+<h2 id="public-image-and-initialization">Public image and initialization</h2>
+<p>The dependency initContainer and runner container use the same Ubuntu Noble image. An initContainer's root filesystem is not shared with the main container, so the chart shares downloaded packages rather than merely running <code>apt install</code> in the initContainer:</p>
+<ol>
+<li>The <code>dependencies</code> initContainer updates the official Ubuntu package indexes and downloads system dependencies and tools as <code>.deb</code> files into <code>/packages</code>, an <code>emptyDir</code> volume. It records the base image's dpkg state and package SHA256 checksums, then writes a completion marker.</li>
+<li>The main container checks the marker, base image state, and checksums, copies packages into its own APT cache, and installs them with <code>apt-get --no-download</code>. No dependencies are downloaded during this stage; APT determines the installation order.</li>
+<li>It creates the runner user, switches to UID/GID 1001 using <code>setpriv</code>, and starts the runner through tini.</li>
+</ol>
+<p>Dependency preparation and installation require root. The dependencies and runner containers are not privileged; runner and workflow processes run as a non-root user. The Docker sidecar, enabled by default, is privileged and requires admission policies that permit it. Workflows with Docker socket access can control that privileged daemon, so run only trusted workflows. This setup cannot start in a cluster that enforces <code>runAsNonRoot</code> for every container. Processes started through <code>kubectl exec</code> still run as root according to the container configuration; explicitly switch users for maintenance commands, as shown below.</p>
+<p><code>/packages</code> lasts for the lifetime of the Pod and is mounted read-only in the main container. A main-container restart reinstalls dependencies offline; Pod recreation downloads them again. This increases startup time and requires access to Ubuntu repositories whenever a Pod is created. The runner program and registration state on the PVC remain intact. The default image pull policy is <code>IfNotPresent</code>; set <code>image.digest</code> to pin the Noble base image. If a mutable tag resolves to different package states for the two containers in a Pod, startup fails explicitly; pin the digest and recreate the Pod.</p>
+<p>Default tools include the runner's system dependencies, Bash, Git, curl, jq, and an SSH client. The chart also installs <code>docker.io</code> (including the Docker CLI and daemon files) and <code>docker-buildx</code> from Ubuntu Noble repositories.</p>
+<p>Starting with 0.4.1, AWS CLI v2 uses the <a href="https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html">official AWS ZIP installer</a>, without depending on the APT <code>awscli</code> package. The initContainer caches all Debian dependencies before installing curl, CA certificates, and unzip offline, then downloads the Linux x86_64 installer from <code>https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip</code>. After verifying the shared cache, the main container extracts the archive and runs <code>aws/install</code> offline, installing into <code>/usr/local/aws-cli</code> with command links in <code>/usr/local/bin</code>. It runs <code>aws --version</code> and removes the temporary extraction directory. The ZIP remains in the Pod's shared temporary volume for container restarts and is removed with the Pod.</p>
+<p>Initialization also requires HTTPS access to <code>awscli.amazonaws.com</code>. This URL tracks the latest v2 release; the AWS CLI version is not pinned. Cache SHA256 checks detect corruption after download and do not replace AWS publisher signature verification. Docker CLI and buildx continue to be downloaded, checked, and installed offline with Ubuntu system dependencies; the base image remains Ubuntu Noble.</p>
+<p>By default, the chart starts a <code>public.ecr.aws/docker/library/docker:dind</code> sidecar for Docker CLI / buildx image builds. Pushing to ECR still requires the workflow to obtain AWS permissions and log in to the target registry. <code>ubuntu24</code> is only a custom matching label; it does not imply the full GitHub-hosted runner toolset.</p>
+<h2 id="docker-sidecar-040">Docker sidecar (0.4.0)</h2>
+<p><code>dind.enabled</code> defaults to true. The runner continues to use Ubuntu, while the daemon uses <code>dind.image</code>. Both containers share <code>/var/run/docker/docker.sock</code>. The chart sets <code>DOCKER_HOST</code> for the runner, and the daemon uses <code>--group=1001</code> to grant the runner user access. An explicit dockerd command makes it listen only on the Unix socket, without TCP listeners on ports 2375/2376.</p>
+<p>Before registration, the runner waits as UID 1001 for <code>docker info</code> to succeed, for approximately 180 seconds by default; configure this with <code>dind.startupTimeoutSeconds</code>. On failure, it exits and directs you to the sidecar logs. Maintenance mode skips this wait. A readiness probe continuously checks the daemon. A later daemon failure makes the Pod NotReady but does not automatically pause an already-running GitHub runner; jobs may fail.</p>
+<p><code>/var/lib/docker</code> uses <code>emptyDir</code>: it survives container restarts, but images and build caches are lost on Pod recreation and consume node ephemeral storage. Both containers also mount <code>/persistent</code> at the same path to support workspace bind mounts. Other paths are not shared automatically. Additional mount and network requirements for container actions, job containers, and service containers have not been validated end to end. The regular sidecar and runner have no strict shutdown ordering; confirm the runner is idle before upgrades.</p>
+<p>If the daemon needs a proxy to pull images, configure <code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code>, and <code>NO_PROXY</code> separately through <code>dind.extraEnv</code>. Its format matches <code>extraEnv</code> and supports Secret references. The runner's <code>extraEnv</code> is not passed to the daemon. Workflows must also configure build proxies for dependencies downloaded inside Dockerfiles. Use <code>dind.resources</code> to set daemon CPU and memory independently. Set <code>dind.enabled: false</code> to disable the sidecar, Docker address, and daemon startup wait.</p>
+<p>After upgrading, check the following, substituting your namespace and Deployment name:</p>
+<pre><code class="language-bash">kubectl logs -n github-runner deployment/${repo}-runner-runner -c docker
+kubectl exec -n github-runner deployment/${repo}-runner-runner -c runner -- \
+  setpriv --reuid=1001 --regid=1001 --init-groups docker info
+</code></pre>
+<p>Then run <code>docker buildx version</code> and an actual build in a workflow to verify building and ECR network permissions. If the DinD image is already available locally, run <code>bash tests/dind-smoke.sh</code>. It creates a temporary privileged daemon and uses a separate UID/GID 1001 client to build a scratch image through the shared socket without registry access. Temporary containers and anonymous volumes are cleaned up afterward.</p>
+<h2 id="first-installation">First installation</h2>
+<p>You need Kubernetes, Helm, a writable PVC, node access to the public image registry, and Pod access to official Ubuntu repositories, GitHub downloads, and Actions services. Local Docker is not required. The StorageClass should support UID/GID 1001 writes, atomic directory renames, and effective cross-Pod <code>flock</code> locks. If the driver does not apply <code>fsGroup</code>, a storage administrator must prepare directory permissions.</p>
+<p>Obtain a <strong>registration token</strong>, not a PAT, from the repository's Settings → Actions → Runners → New self-hosted runner page. Registration tokens usually expire after one hour, so obtain one shortly before startup.</p>
+<p>Starting with Chart 0.4.2, open <strong>GitHub Runner</strong> on Rancher's <strong>Customize</strong> page when installing or upgrading an application. Fill in the repository and <strong>GITHUB_RUNNER_TOKEN</strong> password field; no pre-created Secret is required. The field maps to <code>github.token</code>: a non-empty value takes precedence, while an empty value falls back to <code>github.existingSecret</code>. If both are empty, no token is injected, which is suitable for an already-registered PVC.</p>
+<p>You can also supply the same field on the command line; replace <code>xxx</code> with a valid registration token:</p>
+<pre><code class="language-bash">helm upgrade --install ${repo} . -n github-runner --create-namespace \
+  -f runner.local.yaml --set github.token=xxx
+</code></pre>
+<p>Typing the actual value directly saves it in shell history. To avoid this, use <code>read -rsp 'Runner token: ' RUNNER_TOKEN</code>, pass <code>--set-string github.token="$RUNNER_TOKEN"</code>, and run <code>unset RUNNER_TOKEN</code> afterward.</p>
+<p>After registration succeeds, you can clear the token when upgrading the application in Rancher. The runner continues to reuse credentials on the PVC. The password field only masks the UI: the token is still saved in Helm values/release history and the Deployment environment. Clearing it changes the current configuration without removing older release or ReplicaSet records. Do not commit real tokens to Git.</p>
+<p>To continue using Secret injection, use this compatible setup. Skip it when entering the token directly in the UI:</p>
+<pre><code class="language-bash">kubectl create namespace github-runner
+read -rsp 'Runner registration token: ' RUNNER_TOKEN
+printf '\n'
+printf '%s' &quot;$RUNNER_TOKEN&quot; | kubectl create secret generic github-runner-registration \
+  -n github-runner --from-file=token=/dev/stdin
+unset RUNNER_TOKEN
+</code></pre>
+<p>Create <code>runner.local.yaml</code>, which is excluded by <code>.gitignore</code>:</p>
+<pre><code class="language-yaml">image:
+  repository: public.ecr.aws/ubuntu/ubuntu
+  tag: noble
+github:
+  repo: org/repo
+  existingSecret: github-runner-registration
+runner:
+  name: ${repo}-k8s-runner
+  labels: k8s,ubuntu24
+persistence:
+  size: 20Gi
+  # storageClass: your-storage-class
+</code></pre>
+<pre><code class="language-bash">helm lint . --strict -f runner.local.yaml
+helm upgrade --install ${repo}-runner . -n github-runner -f runner.local.yaml
+kubectl logs -n github-runner deployment/${repo}-runner-runner -f
+</code></pre>
+<p>If the Pod remains in the Init phase, inspect the dependency logs:</p>
+<pre><code class="language-bash">kubectl logs -n github-runner deployment/${repo}-runner-runner -c dependencies -f
+</code></pre>
+<p>Confirm the runner is Online in GitHub, then run a workflow:</p>
+<pre><code class="language-yaml">name: Runner smoke test
+on: workflow_dispatch
+jobs:
+  smoke:
+    runs-on: [self-hosted, Linux, X64, k8s, ubuntu24]
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          id
+          uname -m
+          git --version
+          docker --version
+          docker buildx version
+          aws --version
+          echo &quot;Persistent runner is working&quot;
+</code></pre>
+<p>In a restricted network, configure the initContainer and main-container proxy before installation. The proxy must be reachable from the cluster:</p>
+<pre><code class="language-yaml">extraEnv:
+  - name: http_proxy
+    value: http://111.222.333.444:10015
+  - name: https_proxy
+    value: http://111.222.333.444:10015
+  - name: no_proxy
+    value: localhost,127.0.0.1,.svc,.cluster.local
+</code></pre>
+<p>For proxies with credentials, use <code>extraEnv[].valueFrom.secretKeyRef</code> instead of passwords in values. Both containers receive the same <code>extraEnv</code>; the initContainer maps uppercase proxy variables to APT's lowercase variables. Workflow subprocesses inherit these settings. Image pulls are handled by the node's container runtime; Pod environment variables do not configure node proxies.</p>
+<p>If the proxy is unavailable or login, authentication, or certificate issues arise, stop affected operations and prepare the necessary network access, permissions, or organizational CA. Switch networks and confirm before continuing; do not automatically change package sources or dependency versions. APT downloads have no script-level retries or source fallback. Kubernetes restarts failed initContainers according to its restart policy. Scale the Deployment to zero during network diagnosis to avoid continued attempts.</p>
+<h2 id="startup-and-updates">Startup and updates</h2>
+<p>Each new Pod completes dependency preparation first. These steps then run as the runner user:</p>
+<ol>
+<li>Acquire <code>/persistent/.runner.lock</code>. A second runner using the same PVC fails immediately.</li>
+<li>On first installation, download into <code>/persistent/.runner-install</code>, strictly verify SHA256, then atomically move the completed extraction to <code>/persistent/gh-runner</code>. If downloading or extraction fails, the next startup cleans the staging directory while holding the lock and installs again.</li>
+<li>On first registration, run <code>config.sh --unattended --work _work</code>, saving a record of registration settings and the GitHub credentials.</li>
+<li>Once registered, reuse credentials without a valid registration token or another download/install. Remove the registration token from the environment before execution.</li>
+<li>Run the official <code>run.sh</code> with TERM/INT forwarding. Tini manages PID 1 and orphan processes. Keep default automatic updates enabled; neither <code>--disableupdate</code> nor <code>--ephemeral</code> is used.</li>
+</ol>
+<p><code>runner.initVersion</code> and <code>runner.sha256</code> <strong>only control the first installation on an empty PVC</strong>. Changing them does not overwrite or downgrade an existing installation. Initial values come from the <a href="https://github.com/actions/runner/releases/tag/v2.337.0">official v2.337.0 release</a> for Linux x64. The entire installation directory must be writable, including hidden credentials, update-created version directories, <code>_diag</code>, and <code>_work</code>. These files survive Pod restarts and Helm image upgrades.</p>
+<p>The Deployment has one replica and uses <code>Recreate</code>, causing brief upgrade downtime. RWO does not mean only one Pod, hence the additional file lock. Do not scale it manually or forcibly delete an old Pod that is still running. Other workloads should not use the same PVC. The runner has no liveness/readiness probes by default to avoid interruption during downloads and updates. Kubernetes Ready status or Helm <code>--wait</code> does not mean GitHub Online; check GitHub status and an actual workflow.</p>
+<p>The default 120-second termination grace period provides time to exit but does not guarantee an active job finishes. Before upgrades, restarts, or maintenance, confirm the runner is idle in GitHub and pause workflows that may dispatch new jobs. The operating system and build tools do not update with the runner. New Pods resolve dependencies again from configured repositories; the base image follows <code>image.pullPolicy</code> and its tag/digest. APT package versions are not guaranteed to be fully reproducible. Update the Noble digest or explicitly configure the pull policy to update the base image; no custom build is required.</p>
+<h2 id="main-configuration">Main configuration</h2>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default / description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>image.repository</code>, <code>image.tag</code></td>
+<td>Public <code>public.ecr.aws/ubuntu/ubuntu:noble</code>, shared by the dependency and runner containers</td>
+</tr>
+<tr>
+<td><code>image.digest</code></td>
+<td>Optional SHA256 digest, taking precedence over tag</td>
+</tr>
+<tr>
+<td><code>github.repo</code></td>
+<td><code>org/repo</code>; only repository-level runners on github.com are supported</td>
+</tr>
+<tr>
+<td><code>github.token</code></td>
+<td>GITHUB_RUNNER_TOKEN in Rancher Customize; empty by default; overrides the Secret when filled</td>
+</tr>
+<tr>
+<td><code>github.existingSecret</code>, <code>github.tokenKey</code></td>
+<td><code>github-runner-registration</code> / <code>token</code></td>
+</tr>
+<tr>
+<td><code>runner.name</code></td>
+<td>Uses the Helm release name when empty; must be unique within the repository</td>
+</tr>
+<tr>
+<td><code>runner.labels</code></td>
+<td><code>k8s,ubuntu24</code>; retains default self-hosted / Linux / X64 labels</td>
+</tr>
+<tr>
+<td><code>runner.workDir</code></td>
+<td><code>_work</code>; one relative directory under the installation, excluding bin / externals</td>
+</tr>
+<tr>
+<td><code>persistence.existingClaim</code></td>
+<td>Reuse a PVC in the same namespace when non-empty, without creating or managing it</td>
+</tr>
+<tr>
+<td><code>persistence.storageClass</code></td>
+<td>null uses the cluster default; an empty string explicitly disables StorageClass selection; a class name may also be specified</td>
+</tr>
+<tr>
+<td><code>persistence.size</code></td>
+<td><code>20Gi</code>; expanding existing PVCs depends on the StorageClass; shrinking is unsupported</td>
+</tr>
+<tr>
+<td><code>persistence.retain</code></td>
+<td>true; retain chart-created PVCs on uninstall without changing the underlying PV reclaim policy</td>
+</tr>
+<tr>
+<td><code>resources</code></td>
+<td>Requests: 250m / 512Mi; limits: 2 CPU / 4Gi. Adjust for your builds</td>
+</tr>
+<tr>
+<td><code>initResources</code></td>
+<td>InitContainer requests: 250m / 256Mi; limits: 1 CPU / 1Gi</td>
+</tr>
+<tr>
+<td><code>runner.maintenance</code></td>
+<td>false; when true, prepare dependencies and wait as UID 1001 without registering or accepting jobs</td>
+</tr>
+<tr>
+<td><code>terminationGracePeriodSeconds</code></td>
+<td>120</td>
+</tr>
+<tr>
+<td><code>nodeSelector</code>, <code>tolerations</code>, <code>affinity</code></td>
+<td>Node scheduling; only Linux amd64 is supported</td>
+</tr>
+</tbody>
+</table>
+<h2 id="recovery-configuration-changes-and-uninstall">Recovery, configuration changes, and uninstall</h2>
+<ul>
+<li><strong>Expired or missing token:</strong> enter a new registration token in Rancher Customize and upgrade. For Secret-based installation, update the Secret before registering an empty PVC. Use the same interactive input procedure, add <code>--dry-run=client -o yaml | kubectl apply -f -</code> to the Secret creation command, and restart the Deployment. Registered PVCs do not need this Secret on restart, so expired registration Secrets can be deleted.</li>
+<li><strong>Failed registration or incomplete credentials:</strong> startup preserves the files and reports an error, without deleting credentials or taking over a same-name runner. Check GitHub for leftover registrations, then unregister and retry using the maintenance procedure.</li>
+<li><strong>Changed repository, name, labels, or work directory:</strong> these are written during registration. Direct changes to values produce an explicit error. Restore the original values to resume, or perform maintenance and re-register if the change is intentional. The local record does not detect labels changed manually in GitHub.</li>
+<li><strong>Runner deleted in GitHub:</strong> local credentials are not automatically cleaned up; re-registration is required.</li>
+<li><strong>Incomplete or previously manual installation:</strong> the chart does not overwrite it. Back up and inspect it, then move the old directory aside during downtime or use another PVC. Original-draft installations lack a completion marker and cannot be adopted directly.</li>
+</ul>
+<p>Maintenance procedure:</p>
+<ol>
+<li>Confirm no job is running, pause new jobs, run <code>kubectl scale deployment/${repo}-runner-runner -n github-runner --replicas=0</code>, and wait for the original Pod to exit completely.</li>
+<li>Back up the PVC. Enable maintenance mode with the same release and original values file: <code>helm upgrade ${repo}-runner . -n github-runner -f runner.local.yaml --set runner.maintenance=true</code>. The chart restores one Pod, prepares dependencies, and runs only sleep without connecting to GitHub. Open a non-root maintenance shell using <code>kubectl exec -it -n github-runner deployment/${repo}-runner-runner -c runner -- setpriv --reuid=1001 --regid=1001 --init-groups --no-new-privs /bin/bash</code>.</li>
+<li>In <code>/persistent/gh-runner</code>, run <code>./config.sh remove --token &lt;REMOVE_TOKEN&gt;</code>. Obtain a removal token from GitHub's Remove runner flow and pass it through an interactively read shell variable to avoid shell history. On success, remove <code>.chart-registration</code> and any remaining <code>.chart-registration.tmp</code>. If normal removal is impossible, first delete the old record in GitHub, then back up and rename the entire <code>gh-runner</code> directory to initialize a fresh one.</li>
+<li>Prepare a valid <strong>registration token</strong>, update configuration, and run <code>helm upgrade ${repo}-runner . -n github-runner -f runner.local.yaml --set runner.maintenance=false</code> to leave maintenance mode and resume the runner.</li>
+</ol>
+<p>Do not unregister on every Pod exit. For permanent removal, unregister in GitHub using the maintenance procedure, then uninstall:</p>
+<pre><code class="language-bash">helm uninstall ${repo}-runner -n github-runner
+</code></pre>
+<p>The default PVC <code>${repo}-runner-runner</code> is retained. It contains credentials, source code, and caches; manage access and backups accordingly. Reinstall with <code>--set persistence.existingClaim=${repo}-runner-runner</code> and the original runner name and settings. Before permanently deleting storage, check your backup and PV reclaim policy, then delete the PVC separately.</p>
+<p>Long-running <code>_work</code>, <code>_diag</code>, tool caches, and old update directories consume disk space; monitor PVC capacity. There is no automatic cleaner. During maintenance, remove only data confirmed to be unused, never active versions or credentials. Workflow processes can access runner credentials and the shared workspace. Use this deployment only for trusted repositories and jobs.</p>
+<h2 id="validation-and-chart-publishing">Validation and chart publishing</h2>
+<p>Run in WSL Bash. If no repository Python virtual environment exists, these tests use only the system Python standard library:</p>
+<pre><code class="language-bash">for script in scripts/*.sh; do bash -n &quot;$script&quot;; done
+helm lint . --strict
+python3 -m unittest discover -s tests -v
+helm template smoke . -f value.yaml &gt; /tmp/github-runner.yaml
+helm package . --destination dist
+</code></pre>
+<p>Local tests mock downloads and registration and check persistent recovery, checksum failures, locks, configuration changes, and Helm rendering. They do not replace real-container, storage-driver, and GitHub end-to-end validation. Deployment acceptance checks include:</p>
+<ol>
+<li>Confirm dependency download and offline installation complete, the runner is Online, and the sample workflow's <code>id</code> reports UID 1001.</li>
+<li>Delete an idle Pod and confirm its replacement uses the same runner ID without redownloading the initial runner package.</li>
+<li>After an actual automatic update, record <code>bin/Runner.Listener --version</code>, recreate the Pod, confirm the version persists, and run the workflow again.</li>
+<li>Perform a Helm image upgrade while idle. Confirm two runners never run simultaneously, and test PVC retention and recovery through reuse.</li>
+</ol>
+<p>Optional real-container smoke test, requiring Docker but no GitHub token:</p>
+<pre><code class="language-bash">export HTTP_PROXY=http://165.225.112.16:10015 HTTPS_PROXY=http://165.225.112.16:10015
+docker pull public.ecr.aws/ubuntu/ubuntu:noble
+bash tests/container-smoke.sh
+</code></pre>
+<p>This test shares a temporary volume between two independent containers and disables networking in the main container to verify offline installation. It checks system dependencies, Docker CLI, buildx, AWS CLI v2, and UID/GID 1001, then cleans up containers and the temporary volume. It does not register a GitHub runner or access existing PVCs.</p>
+<h3 id="automatic-publishing-to-github-pages">Automatic publishing to GitHub Pages</h3>
+<p><code>.github/workflows/publish-helm-repository.yaml</code> follows the dbgate publishing workflow. It runs when a push to <code>main</code> changes the chart, values, schema, Customize form, scripts, templates, either README, or documentation tooling. You can also run <strong>Publish Helm repository</strong> manually in GitHub Actions. It runs <code>helm lint . --strict</code>, packages the chart, merges the existing index, renders documentation, and publishes to <code>gh-pages</code>. The branch may be absent on the first run; subsequent runs retain previous chart archives.</p>
+<p>Allow Actions to write repository contents. In <strong>Settings → Pages</strong>, select <strong>Deploy from a branch → gh-pages → / (root)</strong> after the first run creates the branch. The generated URL is <code>https://&lt;GitHub owner&gt;.github.io/&lt;repository name&gt;</code> and can be used as a Rancher chart repository.</p>
+<p>The site root displays the English README as <code>index.html</code>; <code>readme.zh.html</code> displays Chinese. Both pages have language-switch links. Original <code>readme.md</code> and <code>readme.zh.md</code> files are also published for download. Helm clients continue to use <code>index.yaml</code> and chart archives at the same URL. The workflow uses a pinned Python Markdown dependency to generate static HTML, without a Jekyll build. For a local preview, install <code>docs/requirements.txt</code> in a disposable Python virtual environment and run <code>python docs/render.py --output .helm-repository</code>.</p>
+<p>Increment <code>Chart.yaml</code>'s <code>version</code> before publishing changed chart content to avoid overwriting the same package version. <code>.helm-repository/</code> is the local publishing staging directory and is excluded from Git and chart packages.</p>
+<h3 id="manual-publishing">Manual publishing</h3>
+<p>For an HTTP chart repository, publish the packages and index generated in <code>dist/</code> to your static website:</p>
+<pre><code class="language-bash">helm repo index dist --url https://charts.example.com
+</code></pre>
+<p>Merge the previous index when publishing a new version to preserve older releases. Alternatively, use OCI:</p>
+<pre><code class="language-bash">helm push dist/github-runner-0.4.2.tgz oci://registry.example.com/charts
+</code></pre>
+<p>These publishing addresses are placeholders; commands do not run automatically. Scripts are packaged with the chart and mounted through a ConfigMap. After editing scripts, a Helm upgrade is sufficient: the changed script checksum in the Pod template triggers recreation without an image build. Increment the chart version for each release. When upgrading to 0.2.0, remove custom image addresses from older override files so the final configuration uses public Noble. Keep the original runner name, registration settings, and PVC to reuse existing state.</p>
+<p>References: <a href="https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/adding-self-hosted-runners">Registering a runner</a>, <a href="https://github.com/actions/runner/blob/v2.337.0/src/Runner.Listener/Runner.cs">runner arguments</a>, <a href="https://github.com/actions/runner/blob/v2.337.0/src/Misc/layoutroot/run.sh">official run script</a>, and <a href="https://kubernetes.io/docs/concepts/workloads/pods/init-containers/">Kubernetes initContainers</a>.</p></main>
+</body>
+</html>
