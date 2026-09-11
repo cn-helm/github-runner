@@ -12,6 +12,8 @@ on:
       - questions.yml
       - scripts/**
       - readme.md
+      - readme.zh.md
+      - docs/**
       - templates/**
       - .helmignore
       - .github/workflows/publish-helm-repository.yaml
@@ -60,6 +62,19 @@ jobs:
           else
             helm repo index "${repository_dir}" --url "${repository_url}"
           fi
+
+      - name: Set up Python for documentation
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Render English and Chinese documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -r docs/requirements.txt
+          python -m unittest discover -s docs -p 'test_*.py' -v
+          python docs/render.py --output .helm-repository
 
       - name: Publish repository to gh-pages
         uses: peaceiris/actions-gh-pages@v4

@@ -4,5 +4,6 @@
 .gitignore
 .gitattributes
 tests/
+docs/
 dist/
 *.tgz
