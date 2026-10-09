@@ -238,6 +238,22 @@ Kubernetes 的 Ready 或 Helm <code>--wait</code> 不代表 GitHub Online，需�
 <td><code>github-runner-registration</code> / <code>token</code></td>
 </tr>
 <tr>
+<td><code>ServiceAccount.enabled</code></td>
+<td>true；创建并使用 Chart 管理的 ServiceAccount</td>
+</tr>
+<tr>
+<td><code>ServiceAccount.name</code></td>
+<td><code>github-runner-sa</code></td>
+</tr>
+<tr>
+<td><code>ServiceAccount.automountServiceAccountToken</code></td>
+<td>true；控制 ServiceAccount 和 Pod 的 token 自动挂载</td>
+</tr>
+<tr>
+<td><code>ServiceAccount.annotations</code></td>
+<td>可选注解，例如 EKS IRSA 使用的 <code>eks.amazonaws.com/role-arn</code></td>
+</tr>
+<tr>
 <td><code>runner.name</code></td>
 <td>留空使用 Helm release 名称；同一仓库内须唯一</td>
 </tr>

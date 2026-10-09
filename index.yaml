@@ -3,7 +3,17 @@ entries:
   github-runner:
   - apiVersion: v2
     appVersion: 2.337.0
-    created: "2026-09-11T03:03:11.729670896Z"
+    created: "2026-10-09T13:07:30.210735366Z"
+    description: A single persistent GitHub Actions runner with automatic runner updates
+    digest: 3bc6ae943ff128c728b212ac2b90095aa6b8017fe3f45ad8c11f0652751c41a9
+    name: github-runner
+    type: application
+    urls:
+    - https://cn-helm.github.io/github-runner/github-runner-0.4.3.tgz
+    version: 0.4.3
+  - apiVersion: v2
+    appVersion: 2.337.0
+    created: "2026-10-09T13:07:30.209803211Z"
     description: A single persistent GitHub Actions runner with automatic runner updates
     digest: d98b273ece4a933f61921f652959bdb832e7d95d0f6acf1a39a8be9046e4b959
     name: github-runner
@@ -11,4 +21,4 @@ entries:
     urls:
     - https://cn-helm.github.io/github-runner/github-runner-0.4.2.tgz
     version: 0.4.2
-generated: "2026-09-11T03:03:11.728522822Z"
+generated: "2026-10-09T13:07:30.208747215Z"
