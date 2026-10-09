@@ -236,6 +236,10 @@ Kubernetes 的 Ready 或 Helm `--wait` 不代表 GitHub Online，需要结合 Gi
 | `github.repo`                                 | `org/repo`，仅支持 github.com 仓库级 runner                         |
 | `github.token`                                | Rancher Customize 的 GITHUB_RUNNER_TOKEN，默认空；填写后优先于 Secret |
 | `github.existingSecret`, `github.tokenKey`  | `github-runner-registration` / `token`                            |
+| `ServiceAccount.enabled` | true；创建并使用 Chart 管理的 ServiceAccount |
+| `ServiceAccount.name` | `github-runner-sa` |
+| `ServiceAccount.automountServiceAccountToken` | true；控制 ServiceAccount 和 Pod 的 token 自动挂载 |
+| `ServiceAccount.annotations` | 可选注解，例如 EKS IRSA 使用的 `eks.amazonaws.com/role-arn` |
 | `runner.name`                                 | 留空使用 Helm release 名称；同一仓库内须唯一                          |
 | `runner.labels`                               | `k8s,ubuntu24`，保留默认 self-hosted / Linux / X64 标签             |
 | `runner.workDir`                              | `_work`，必须是安装目录下的单层相对目录，不能是 bin / externals     |

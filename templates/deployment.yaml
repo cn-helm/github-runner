@@ -18,7 +18,10 @@ spec:
       labels:
         {{- include "github-runner.selectorLabels" . | nindent 8 }}
     spec:
-      automountServiceAccountToken: false
+      automountServiceAccountToken: {{ .Values.ServiceAccount.automountServiceAccountToken }}
+      {{- if .Values.ServiceAccount.enabled }}
+      serviceAccountName: {{ .Values.ServiceAccount.name | quote }}
+      {{- end }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         fsGroup: 1001

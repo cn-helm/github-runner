@@ -177,6 +177,10 @@ The default 120-second termination grace period provides time to exit but does n
 | `github.repo` | `org/repo`; only repository-level runners on github.com are supported |
 | `github.token` | GITHUB_RUNNER_TOKEN in Rancher Customize; empty by default; overrides the Secret when filled |
 | `github.existingSecret`, `github.tokenKey` | `github-runner-registration` / `token` |
+| `ServiceAccount.enabled` | true; create and use the chart-managed ServiceAccount |
+| `ServiceAccount.name` | `github-runner-sa` |
+| `ServiceAccount.automountServiceAccountToken` | true; controls token automount on the ServiceAccount and Pod |
+| `ServiceAccount.annotations` | Optional annotations, for example `eks.amazonaws.com/role-arn` for EKS IRSA |
 | `runner.name` | Uses the Helm release name when empty; must be unique within the repository |
 | `runner.labels` | `k8s,ubuntu24`; retains default self-hosted / Linux / X64 labels |
 | `runner.workDir` | `_work`; one relative directory under the installation, excluding bin / externals |

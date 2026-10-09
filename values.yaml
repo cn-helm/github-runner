@@ -30,6 +30,13 @@ github:
   existingSecret: github-runner-registration
   tokenKey: token
 
+ServiceAccount:
+  enabled: true
+  name: github-runner-sa
+  automountServiceAccountToken: true
+  annotations: 
+    eks.amazonaws.com/role-arn: ''
+
 runner:
   # Prepare dependencies, then sleep as UID 1001 without registering/running jobs.
   maintenance: false
